@@ -146,7 +146,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           bash scripts/publish-badge.sh badges-verification verification.json \
-            '{"schemaVersion":1,"label":"formal verification","message":"passing","color":"brightgreen"}'
+            '{"schemaVersion":1,"label":"rate model proofs","message":"passing","color":"brightgreen"}'
 
       - name: Publish verification badge — failing (main only)
         if: failure() && github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -154,4 +154,4 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           bash scripts/publish-badge.sh badges-verification verification.json \
-            '{"schemaVersion":1,"label":"formal verification","message":"failing","color":"critical"}'
+            '{"schemaVersion":1,"label":"rate model proofs","message":"failing","color":"critical"}'
