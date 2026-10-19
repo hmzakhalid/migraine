@@ -22,6 +22,7 @@ contract MigraineHandler is Test {
     uint256 public ghostTotalAIn;
     uint256 public ghostTotalBOut;
     uint256 public ghostInjectedB;
+    uint256 public ghostRedemptions;
 
     constructor(Migraine redeemer_, MockERC20 tokenA_, MockERC20 tokenB_, address vault_, uint256 num, uint256 den) {
         redeemer = redeemer_;
@@ -68,19 +69,17 @@ contract MigraineHandler is Test {
         vm.prank(vault);
         tokenB.approve(address(redeemer), type(uint256).max);
 
-        if (useRedeemTo) {
-            vm.prank(actor);
-            try redeemer.redeemTo(amountA, recipient) returns (uint256 amountB) {
-                ghostTotalAIn += amountA;
-                ghostTotalBOut += amountB;
-            } catch {}
-        } else {
-            vm.prank(actor);
-            try redeemer.redeem(amountA) returns (uint256 amountB) {
-                ghostTotalAIn += amountA;
-                ghostTotalBOut += amountB;
-            } catch {}
-        }
+        // Every call here is funded and approved, so it must succeed and pay exactly needB.
+        address to = useRedeemTo ? recipient : actor;
+        uint256 recipientBefore = tokenB.balanceOf(to);
+        vm.prank(actor);
+        uint256 amountB = useRedeemTo ? redeemer.redeemTo(amountA, recipient) : redeemer.redeem(amountA);
+        assertEq(amountB, needB, "payout differs from the fixed rate");
+        assertEq(tokenB.balanceOf(to) - recipientBefore, needB, "recipient did not receive the payout");
+
+        ghostTotalAIn += amountA;
+        ghostTotalBOut += amountB;
+        ghostRedemptions += 1;
     }
 }
 
@@ -110,23 +109,33 @@ contract MigraineInvariantTest is Test {
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
     }
 
+    /// @notice Every handler call is funded and approved, so each invariant fails on any
+    ///         revert (see the inline config), and the run must actually redeem something.
+    function afterInvariant() public view {
+        assertGt(handler.ghostRedemptions(), 0, "no redemption succeeded");
+    }
+
     /// @notice The redeemer never holds tokenA or tokenB.
+    /// forge-config: default.invariant.fail-on-revert = true
     function invariant_NoCustody() public view {
         assertEq(tokenA.balanceOf(address(redeemer)), 0);
         assertEq(tokenB.balanceOf(address(redeemer)), 0);
     }
 
     /// @notice The vault's tokenA only ever grows, by exactly the redeemed amounts.
+    /// forge-config: default.invariant.fail-on-revert = true
     function invariant_VaultTokenAConservation() public view {
         assertEq(tokenA.balanceOf(vault), handler.ghostTotalAIn());
     }
 
     /// @notice The vault's tokenB only ever shrinks by exactly the paid-out amounts.
+    /// forge-config: default.invariant.fail-on-revert = true
     function invariant_VaultTokenBConservation() public view {
         assertEq(tokenB.balanceOf(vault), handler.ghostInjectedB() - handler.ghostTotalBOut());
     }
 
     /// @notice Cumulative payouts never exceed the fixed rate (rounding only favours the vault).
+    /// forge-config: default.invariant.fail-on-revert = true
     function invariant_RateNeverFavoursRedeemer() public view {
         assertLe(handler.ghostTotalBOut() * RATE_DEN, handler.ghostTotalAIn() * RATE_NUM);
     }

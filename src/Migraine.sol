@@ -7,10 +7,15 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /// @title Migraine
 /// @notice One-way, fixed-rate, permissionless redemption of `tokenA` for `tokenB`.
-/// @dev The contract never holds tokens. `tokenA` is pulled from the caller into a
-///      separate vault wallet, and `tokenB` is pushed from that wallet to a chosen
-///      recipient. The vault wallet must approve this contract for `tokenB`, and
-///      callers must approve it for `tokenA`. All configuration is immutable.
+/// @dev A redemption never routes tokens through this contract: `tokenA` is pulled from
+///      the caller straight into a separate vault wallet, and `tokenB` is pushed from
+///      that wallet straight to a chosen recipient. The vault wallet must approve this
+///      contract for `tokenB` (that allowance caps further payouts, and setting it to 0
+///      stops redemptions), and callers must approve it for `tokenA`. All configuration
+///      is immutable.
+///
+///      Tokens sent to this contract directly (by mistake) can be moved on to the vault
+///      wallet by anyone with `sweep`.
 ///
 ///      The contract is stateless: `redeem`/`redeemTo` only read immutables and
 ///      perform two external transfers, so there is no partially-updated state for a
@@ -40,6 +45,11 @@ contract Migraine {
     /// @param amountB Amount of `tokenB` received by the recipient.
     event Redeemed(address indexed redeemer, address indexed recipient, uint256 amountA, uint256 amountB);
 
+    /// @notice Emitted when tokens held by this contract are moved to the vault wallet.
+    /// @param token Token that was swept.
+    /// @param amount Amount moved to the vault wallet.
+    event Swept(IERC20 indexed token, uint256 amount);
+
     /// @notice A required address was the zero address.
     error ZeroAddress();
     /// @notice `tokenA` and `tokenB` were the same address.
@@ -58,6 +68,8 @@ contract Migraine {
     error ZeroOutput();
     /// @notice The recipient was the zero address, this contract, a token, or the vault wallet.
     error InvalidRecipient(address to);
+    /// @notice The vault wallet tried to redeem against itself.
+    error VaultCannotRedeem();
 
     /// @param tokenA_ Token given by users. Must be non-zero and distinct from `tokenB_`.
     /// @param tokenB_ Token received by users. Must be non-zero and distinct from `tokenA_`.
@@ -82,7 +94,8 @@ contract Migraine {
     /// @notice Preview the `tokenB` payout for a given `tokenA` input.
     /// @dev Uses full 512-bit intermediate precision and rounds down. Returns 0 for
     ///      inputs that `redeem` would reject (`amountA == 0`, or a payout that rounds
-    ///      to zero); `redeem` reverts in those cases while this view does not.
+    ///      to zero); `redeem` reverts in those cases while this view does not. Like
+    ///      `redeem`, it reverts if the payout does not fit in 256 bits.
     /// @param amountA Amount of `tokenA` to redeem.
     /// @return amountB Amount of `tokenB` that `redeem(amountA)` would pay.
     function previewRedeem(uint256 amountA) public view returns (uint256 amountB) {
@@ -104,6 +117,8 @@ contract Migraine {
     ///        `tokenA`, `tokenB`, or `wallet`.
     /// @return amountB Amount of `tokenB` paid out.
     function redeemTo(uint256 amountA, address to) public returns (uint256 amountB) {
+        // The vault would pay itself in tokenA, so tokenB would leave without a payment.
+        if (msg.sender == wallet) revert VaultCannotRedeem();
         if (amountA == 0) revert ZeroAmount();
 
         amountB = Math.mulDiv(amountA, rateNumerator, rateDenominator);
@@ -128,5 +143,18 @@ contract Migraine {
         // wallet itself has granted this contract.
         // forge-lint: disable-next-line(arbitrary-send-erc20)
         tokenB.safeTransferFrom(wallet, to, amountB);
+    }
+
+    /// @notice Move this contract's whole balance of `token` to the vault wallet.
+    /// @dev Redemptions never leave tokens here, so any balance was sent by mistake.
+    ///      Anyone may call this; the destination is always the immutable vault wallet,
+    ///      which can return the tokens to their sender.
+    /// @param token Token to sweep.
+    /// @return amount Amount moved to the vault wallet.
+    function sweep(IERC20 token) external returns (uint256 amount) {
+        amount = token.balanceOf(address(this));
+        if (amount == 0) return 0;
+        emit Swept(token, amount);
+        token.safeTransfer(wallet, amount);
     }
 }

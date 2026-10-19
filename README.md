@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/auryn-macmillan/migraine/actions/workflows/ci.yml/badge.svg)](https://github.com/auryn-macmillan/migraine/actions/workflows/ci.yml)
 [![coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fauryn-macmillan%2Fmigraine%2Fbadges%2Fcoverage.json)](https://github.com/auryn-macmillan/migraine/actions/workflows/ci.yml)
-[![formal verification](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fauryn-macmillan%2Fmigraine%2Fbadges-verification%2Fverification.json)](https://github.com/auryn-macmillan/migraine/actions/workflows/ci.yml)
+[![rate model proofs](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fauryn-macmillan%2Fmigraine%2Fbadges-verification%2Fverification.json)](./verity/README.md)
 
 > *Migraine* — because migrating from token A to token B is normally such a pain.
 
@@ -91,11 +91,19 @@ The test suite covers:
 ```bash
 export TOKEN_A=0x...
 export TOKEN_B=0x...
-export VAULT_WALLET=0x...        # a Gnosis Safe address
-export RATE_NUMERATOR=25         # amountB = amountA * 25 / 10
-export RATE_DENOMINATOR=10
+export VAULT_WALLET=0x...          # a dedicated Safe
+# The rate is in smallest units, so it carries any decimals difference. Example:
+# a 6-decimal tokenA to an 18-decimal tokenB at 2.5 tokenB per tokenA:
+export RATE_NUMERATOR=2500000000000    # amountB = amountA * 2500000000000 / 1
+export RATE_DENOMINATOR=1
+export EXPECTED_B_PER_A=2500000000000000000   # what one whole tokenA must buy
 forge script script/Deploy.s.sol --rpc-url "$RPC_URL" --broadcast
 ```
+
+The script refuses to broadcast unless one whole `tokenA` previews to
+`EXPECTED_B_PER_A`, and checks the deployed contract again afterwards; a deployed
+rate can never change. Start with a small vault allowance and one test
+redemption, then raise the allowance.
 
 ### Vault wallet checklist
 
@@ -105,9 +113,22 @@ Before users can redeem, the vault wallet must:
 2. execute an ERC-20 `approve(Migraine, allowance)` transaction on
    `tokenB`.
 
-The allowance is the effective cap: the redeemer can never pay out more `tokenB`
-than the vault has approved. Choose an allowance equal to
-`maxTokenA * rateNumerator / rateDenominator`.
+The allowance is the live cap: the redeemer can never pay out more `tokenB`
+than the vault has approved, and each redemption uses some of it up. The vault
+can raise it at any time, or set it to `0` to stop redemptions once that
+transaction lands (the contract itself has no owner and no pause).
+
+### Operating a vault
+
+- Use a dedicated vault Safe for each instance, apart from any treasury, and
+  fund it in tranches; keep the allowance equal to what it should pay out.
+- The vault must hold `tokenB` it can actually transfer. A token with transfer
+  locks (vesting, per-account locks) fails a redemption when the vault's
+  transferable balance is too low, whatever the allowance says.
+- The vault keeps the `tokenA` it receives. If it moved that `tokenA` back into
+  circulation, the same tokens could be redeemed twice.
+- Tokens sent to the contract by mistake: call `sweep(token)`, then return them
+  from the vault.
 
 ## Frontend
 
@@ -118,16 +139,17 @@ python3 -m http.server 8080   # then open http://localhost:8080
 
 Set the deployed address in `web/config.js`. See [`web/README.md`](./web/README.md).
 
-## Formal verification (Verity)
+## Rate model proofs (Verity)
 
 [Verity](https://veritylang.com/) is a Lean 4 framework for writing smart
 contracts that compile to EVM bytecode with machine-checked correctness proofs.
-Because the deployed contract's behaviour hinges on external ERC-20 calls and
-atomic token movement, the Verity artifact models the **provable accounting
-core** — the fixed-rate payout, the inventory debit, the cumulative-redeemed
-credit and the guard ordering — as a two-slot state machine, and proves that
-every successful redemption debits the inventory by exactly the previewed payout
-and preserves all other state.
+The Verity artifact is a **separate model**, not the deployed contract: a
+two-slot state machine with a fixed example rate (`25 / 10`) and a 256-bit
+multiply, without the token transfers, the recipient checks or `sweep`. It
+proves that every successful redemption in the model debits the inventory by
+exactly the previewed payout and preserves all other state. The Solidity
+contract's own behaviour (512-bit `mulDiv`, transfers, guards) is covered by the
+Foundry tests.
 
 See [`verity/README.md`](./verity/README.md) for what is proven, what sits on
 Verity's trusted boundary, and how to build it inside a Verity checkout.
@@ -147,9 +169,9 @@ pull request:
   overlays the `Migraine` model via `scripts/ci-verity.sh`, builds the
   proofs (`lake build Contracts.Migraine.Proofs.Correctness`), fails on
   any `sorry`/`admit`, registers the compiler model and emits
-  `Migraine.yul` as a build artifact. On `main` it publishes the
-  **formal verification** badge (a `badges-verification` branch, `passing` /
-  `failing`), so the proof status is visible without reading the workflow.
+  `Migraine.yul` (the model's code, not the deployed contract) as a build
+  artifact. On `main` it publishes the **rate model proofs** badge (a
+  `badges-verification` branch, `passing` / `failing`).
 
 Both badges are self-hosted (a shields.io "endpoint" backed by a JSON file on a
 dedicated branch, published by [`scripts/publish-badge.sh`](./scripts/publish-badge.sh))

@@ -376,4 +376,77 @@ contract MigraineTest is TestBase {
         assertEq(tokenA.balanceOf(address(redeemer)), 0);
         assertEq(tokenB.balanceOf(address(redeemer)), 0);
     }
+
+    // ---------------------------------------------------------------------
+    // Vault as caller
+    // ---------------------------------------------------------------------
+
+    function test_Redeem_RevertsWhenVaultIsCaller() public {
+        _fundVault(1_000e6);
+        tokenA.mint(vault, 1e18);
+        vm.startPrank(vault);
+        tokenA.approve(address(redeemer), type(uint256).max);
+        vm.expectRevert(Migraine.VaultCannotRedeem.selector);
+        redeemer.redeem(1e18);
+        vm.expectRevert(Migraine.VaultCannotRedeem.selector);
+        redeemer.redeemTo(1e18, alice);
+        vm.stopPrank();
+    }
+
+    // ---------------------------------------------------------------------
+    // Sweep
+    // ---------------------------------------------------------------------
+
+    function test_Sweep_MovesStrayTokensToVault() public {
+        tokenA.mint(address(redeemer), 5e18);
+        tokenB.mint(address(redeemer), 7e6);
+
+        vm.expectEmit(true, false, false, true, address(redeemer));
+        emit Migraine.Swept(IERC20(address(tokenA)), 5e18);
+        vm.prank(bob); // anyone may sweep; the destination is fixed
+        assertEq(redeemer.sweep(IERC20(address(tokenA))), 5e18);
+        assertEq(redeemer.sweep(IERC20(address(tokenB))), 7e6);
+
+        assertEq(tokenA.balanceOf(vault), 5e18);
+        assertEq(tokenB.balanceOf(vault), 7e6);
+        assertEq(tokenA.balanceOf(address(redeemer)), 0);
+        assertEq(tokenB.balanceOf(address(redeemer)), 0);
+    }
+
+    function test_Sweep_EmptyBalanceReturnsZero() public {
+        vm.recordLogs();
+        assertEq(redeemer.sweep(IERC20(address(tokenA))), 0);
+        assertEq(vm.getRecordedLogs().length, 0);
+    }
+
+    // ---------------------------------------------------------------------
+    // Rate edge cases
+    // ---------------------------------------------------------------------
+
+    function test_PreviewRedeem_RevertsOnOverflow() public {
+        // type(uint256).max * 3 / 2 does not fit in 256 bits.
+        vm.expectRevert();
+        redeemer.previewRedeem(type(uint256).max);
+    }
+
+    /// @dev A 6-decimal tokenA to an 18-decimal tokenB: the smallest-unit rate carries a
+    ///      1e12 factor. At 2.5 tokenB per tokenA the numerator is 2.5 * 1e12.
+    function test_Redeem_UpscalesSixToEighteenDecimals() public {
+        MockERC20 six = new MockERC20("Six", "SIX", 6);
+        MockERC20 eighteen = new MockERC20("Eighteen", "EIGHTEEN", 18);
+        Migraine r = new Migraine(IERC20(address(six)), IERC20(address(eighteen)), vault, 2_500_000_000_000, 1);
+
+        eighteen.mint(vault, 10_000e18);
+        vm.prank(vault);
+        eighteen.approve(address(r), type(uint256).max);
+        six.mint(alice, 1_000e6);
+        vm.startPrank(alice);
+        six.approve(address(r), type(uint256).max);
+        assertEq(r.previewRedeem(1e6), 2.5e18);
+        assertEq(r.redeem(1_000e6), 2_500e18);
+        vm.stopPrank();
+
+        assertEq(eighteen.balanceOf(alice), 2_500e18);
+        assertEq(six.balanceOf(vault), 1_000e6);
+    }
 }

@@ -1,7 +1,12 @@
 # Verity formalization — `Migraine`
 
 This directory holds a [Verity](https://veritylang.com/) formal specification,
-reference model and machine-checked proofs for the `Migraine` contract.
+reference model and machine-checked proofs for a **model** of the `Migraine`
+contract's rate arithmetic. The model is not the deployed contract: it fixes an
+example rate (`25 / 10`), keeps two storage counters, multiplies in 256 bits
+(the Solidity contract uses 512-bit `Math.mulDiv`), and leaves out the token
+transfers, the recipient and vault checks, and `sweep`. Those are covered by the
+Foundry tests.
 Verity is a Lean 4 EDSL that compiles smart contracts to EVM bytecode and ties
 each implementation to a `Prop`-valued specification with a proof.
 
